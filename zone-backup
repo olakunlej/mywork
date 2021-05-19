@@ -1,0 +1,106 @@
+#!/bin/bash
+#
+#################################################################################
+# Name         : zonebakup.sh                                                   #
+#                                                                               #
+# Created By   : Olugbenga Olakunle (SST Unix, TCS)                             #
+# Creation Date: 14/04/2021                                                     #
+#                                                                               #
+# Parameters   : NONE                                                           #
+#                                                                               #
+# Description  : This script is developed to take the snapshots of zone.        #
+#                                                                               #
+# Point 1 : zone snapshot and zone configurations is copied.                    #
+# Point 2 : Send the snapshot to /zone_backup directory                         #
+# Point 3 : Write the logs under /zone_backup files                             #
+# Point 4 : Delete the snapshot to avoid the snapshot space usage               #
+# Point 5 : Delete 3 days old files under /backup/snap (Only has 3 snap)        #
+#                                                                               #
+#################################################################################
+#
+#########################################
+# WARNING: This file is under strict revision control and must not be
+#          modified except by authorised personnel using the master source
+#          code archive.
+#########################################
+# zonebakup.sh                          #
+#########################################
+# Revision 1.0  2021/04/28 09:49:49  root
+# Created a log file under /zone_backup/logs
+################
+#Configuration Section :
+guestwithoutzone=0
+backupath=/zone_backup
+SNAPSHOT_DIR=$backupath
+SNAPSHOTS_TO_KEEP=2
+LOG=/zone_backup/logs
+zonechek=$(zoneadm list -icv | grep running | awk '{if(NR>1)print}'| awk  {'print $2'}| wc -l)
+zonename=$(zoneadm list -icv | grep running | awk '{if(NR>1)print}'| awk  {'print $2'})
+zonelist=$(zoneadm list -icv | grep running | awk  {'print $4'} | awk '{if(NR>1)print}')
+zonezfs=$(zfs list -H -o name $zonelist)
+Dat=$(date +%d%m%Y)
+sendcheck=$(ps -ef | grep "zfs send" | awk '{if(NR>1)print}'|wc -l)
+sendcheck2=$(ps -ef | grep "zfs send" | awk {'print $11'})
+oldbkp=$(ls -ltrh $backupath | egrep 'rpool.bkp' | wc -l)
+#sendcheck2=$(ps -ef | grep "zfs send" | awk {'print $11'} | awk '{if(NR>1)print}')
+#To ensure that all the backup are completed before another one start
+if [ $sendcheck -gt $guestwithoutzone ];
+then
+        echo "zone backup cannot be run at this time because $sendcheck2 backup is in proggress" > $LOG/failedbackup.log
+        exit 1
+else
+#check to ensure that old backup kept are not more than 3
+for old_snap in $zonezfs
+        do
+        snapbkp=$(ls -t $backupath |  grep $old_snap.archive | awk 'NR>2')
+                for i in $snapbkp
+                        do
+                        rm -rf $backupath/$i
+                done
+done
+#check if the zone exist on the sys and Create an archive of the zone using a ZFS snapshot
+if [ $zonechek -le $guestwithoutzone ];
+then
+        echo "There is no running zone on this guest domain at $(date) LDOM $(hostname) is Guest Ldom" > $LOG/$(hostname).info
+		exit 1
+else
+        for zfs in $zonezfs
+        do
+#Create a snapshot of the zones ZFS
+                zfs snapshot -r $zfs@$Dat-snap
+                if [ $? -eq 0 ]; then
+                        echo "zone snapshot successuly created" >$LOG/$zfs.log
+                        zfs list -r -t snapshot -o name,creation $zfs >> $LOG/$zfs.log
+#send the snapshot to the storage for backup as
+                        zfs send -rc $zfs@$Dat-snap >  $backupath/$zfs.archive-$Dat
+                                if [ $? -eq 0 ]; then
+                                        echo "zone snapshot successuly sent" >>$LOG/$zfs.log
+                                        ls -ltr  $backupath/$zfs.archive-$Dat >> $LOG/$zfs.log
+                                else
+                                        echo "The sent/backup of the zfs $zfs@$Dat-snap failed kindly investigate" > $LOG/$zfs.error
+                                fi
+                else
+                        echo "The script could not create snapshot of $zfs kindly investigate">> $LOG/$zfs.error
+                fi
+#remove the snapshot from the Guset Ldom
+zfs destroy -r $zfs@$Dat-snap
+                if [ $? -eq 0 ]; then
+                        echo "The snapshot have successuly deleted from the system" >> $LOG/$zfs.log
+                else
+                        echo "Deletion of $zfs@$Dat failed pls run zfs destroy -r $zfs@$Dat-snap manually " >> $LOG/$zfs.error
+                fi
+        done
+#create backup files of your non-global zone configurations
+        for zone in $zonename
+        do
+        zonecfg -z $zone export > $backupath/$zone.config
+                if [ $? -eq 0 ]; then
+                        echo "Zone Configuration have successuly backup"  >> $LOG/$zone.log
+                        ls -ltar $backupath/$zone.config >> $LOG/$zone.log
+                else
+                        echo "$zone configuration backup failed" >> $LOG/$zone.error
+                fi
+        done
+fi
+fi
+#This the end of the  zone backup 
